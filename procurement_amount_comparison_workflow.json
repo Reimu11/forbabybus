@@ -1,0 +1,576 @@
+{
+  "app": {
+    "description": "上传采购金额汇总表和采购明细表图片，分别解析为 JSON，并按货品类别比较总价。",
+    "icon": "",
+    "icon_background": "#E0F2FE",
+    "mode": "workflow",
+    "name": "采购金额图片比对",
+    "use_icon_as_answer_icon": false
+  },
+  "dependencies": [],
+  "kind": "app",
+  "version": "0.3.0",
+  "workflow": {
+    "conversation_variables": [],
+    "environment_variables": [],
+    "features": {
+      "file_upload": {
+        "enabled": true,
+        "allowed_file_extensions": [
+          ".png"
+        ],
+        "allowed_file_types": [
+          "image"
+        ],
+        "allowed_file_upload_methods": [
+          "local_file"
+        ],
+        "number_limits": 2
+      }
+    },
+    "graph": {
+      "nodes": [
+        {
+          "id": "start",
+          "type": "custom",
+          "position": {
+            "x": 80,
+            "y": 300
+          },
+          "positionAbsolute": {
+            "x": 80,
+            "y": 300
+          },
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "width": 244,
+          "height": 180,
+          "data": {
+            "type": "start",
+            "title": "选择两张图片",
+            "desc": "每次运行选择一组采购金额汇总表.png 和采购明细表.png。",
+            "selected": false,
+            "variables": [
+              {
+                "variable": "summary_image",
+                "label": "采购金额汇总表.png",
+                "type": "file",
+                "required": true,
+                "max_length": 48,
+                "options": [],
+                "allowed_file_types": [
+                  "image"
+                ],
+                "allowed_file_extensions": [
+                  ".png"
+                ],
+                "allowed_file_upload_methods": [
+                  "local_file"
+                ]
+              },
+              {
+                "variable": "detail_image",
+                "label": "采购明细表.png",
+                "type": "file",
+                "required": true,
+                "max_length": 48,
+                "options": [],
+                "allowed_file_types": [
+                  "image"
+                ],
+                "allowed_file_extensions": [
+                  ".png"
+                ],
+                "allowed_file_upload_methods": [
+                  "local_file"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "parse_summary",
+          "type": "custom",
+          "position": {
+            "x": 400,
+            "y": 80
+          },
+          "positionAbsolute": {
+            "x": 400,
+            "y": 80
+          },
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "width": 244,
+          "height": 160,
+          "data": {
+            "type": "llm",
+            "title": "解析采购金额汇总表",
+            "desc": "将汇总表图片中的各类别总价解析为 JSON。",
+            "selected": false,
+            "context": {
+              "enabled": false,
+              "variable_selector": []
+            },
+            "model": {
+              "provider": "openai",
+              "name": "gpt-4o",
+              "mode": "chat",
+              "completion_params": {
+                "temperature": 0
+              }
+            },
+            "prompt_template": [
+              {
+                "role": "system",
+                "text": "你是采购表格图片解析器。只输出符合给定 JSON Schema 的 JSON，不要输出 Markdown、解释或额外文字。逐行读取采购金额汇总表：category 是货品类别，total_amount 是该类别总价的数值，不包含货币符号或千分位。不要把合计、总计行作为货品类别，不要臆造图片中不存在的数据。"
+              },
+              {
+                "role": "user",
+                "text": "请解析上传的采购金额汇总表图片，输出所有货品类别的 category 和 total_amount。"
+              }
+            ],
+            "variables": [],
+            "vision": {
+              "enabled": true,
+              "configs": {
+                "detail": "high",
+                "variable_selector": [
+                  "start",
+                  "summary_image"
+                ]
+              }
+            },
+            "structured_output_enabled": true,
+            "structured_output": {
+              "type": "object",
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "description": "货品类别"
+                      },
+                      "total_amount": {
+                        "type": "number",
+                        "description": "该类别在汇总表中的总价"
+                      }
+                    },
+                    "required": [
+                      "category",
+                      "total_amount"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "items"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "id": "parse_detail",
+          "type": "custom",
+          "position": {
+            "x": 400,
+            "y": 500
+          },
+          "positionAbsolute": {
+            "x": 400,
+            "y": 500
+          },
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "width": 244,
+          "height": 160,
+          "data": {
+            "type": "llm",
+            "title": "解析采购明细表",
+            "desc": "将明细表图片中的各条采购记录解析为 JSON。",
+            "selected": false,
+            "context": {
+              "enabled": false,
+              "variable_selector": []
+            },
+            "model": {
+              "provider": "openai",
+              "name": "gpt-4o",
+              "mode": "chat",
+              "completion_params": {
+                "temperature": 0
+              }
+            },
+            "prompt_template": [
+              {
+                "role": "system",
+                "text": "你是采购表格图片解析器。只输出符合给定 JSON Schema 的 JSON，不要输出 Markdown、解释或额外文字。逐行读取采购明细表：category 是货品类别，item_name 是货品名称，quantity 是数量，unit_price 是单价，total_amount 是该行总价。金额和数量均输出数值，不包含货币符号或千分位。如果图片没有单独的行总价列，则按 quantity 乘以 unit_price 计算 total_amount；没有 item_name、quantity 或 unit_price 列时，对应字段分别填空字符串或 0。不要把合计、总计行作为采购明细，不要臆造图片中不存在的数据。"
+              },
+              {
+                "role": "user",
+                "text": "请解析上传的采购明细表图片，输出全部采购明细行。"
+              }
+            ],
+            "variables": [],
+            "vision": {
+              "enabled": true,
+              "configs": {
+                "detail": "high",
+                "variable_selector": [
+                  "start",
+                  "detail_image"
+                ]
+              }
+            },
+            "structured_output_enabled": true,
+            "structured_output": {
+              "type": "object",
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "description": "货品类别"
+                      },
+                      "item_name": {
+                        "type": "string",
+                        "description": "货品名称"
+                      },
+                      "quantity": {
+                        "type": "number",
+                        "description": "采购数量"
+                      },
+                      "unit_price": {
+                        "type": "number",
+                        "description": "采购单价"
+                      },
+                      "total_amount": {
+                        "type": "number",
+                        "description": "该明细行总价"
+                      }
+                    },
+                    "required": [
+                      "category",
+                      "item_name",
+                      "quantity",
+                      "unit_price",
+                      "total_amount"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "items"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "id": "compare_amounts",
+          "type": "custom",
+          "position": {
+            "x": 740,
+            "y": 300
+          },
+          "positionAbsolute": {
+            "x": 740,
+            "y": 300
+          },
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "width": 244,
+          "height": 180,
+          "data": {
+            "type": "code",
+            "title": "按类别汇总并比较总价",
+            "desc": "以数值汇总明细金额，逐类别比较并输出 JSON。",
+            "selected": false,
+            "code_language": "python3",
+            "code": "def main(summary_text: str, detail_text: str) -> dict:\n    import json\n    import re\n    from decimal import Decimal\n\n    def parse_json(text):\n        content = text.strip()\n        try:\n            return json.loads(content)\n        except json.JSONDecodeError:\n            fenced = re.search(r\"```(?:json)?\\s*([\\s\\S]*?)\\s*```\", content)\n            if fenced:\n                return json.loads(fenced.group(1))\n            start = content.find(\"{\")\n            end = content.rfind(\"}\")\n            if start >= 0 and end > start:\n                return json.loads(content[start:end + 1])\n            raise ValueError(\"模型输出不是有效的 JSON\")\n\n    def to_amount(value):\n        if value is None or isinstance(value, bool):\n            raise ValueError(\"金额必须是数值\")\n        cleaned = str(value).replace(\",\", \"\").replace(\"¥\", \"\").replace(\"￥\", \"\").replace(\"元\", \"\").strip()\n        return Decimal(cleaned)\n\n    def get_items(document, name):\n        if not isinstance(document, dict) or not isinstance(document.get(\"items\"), list):\n            raise ValueError(name + \"解析结果必须包含 items 数组\")\n        return document[\"items\"]\n\n    summary = parse_json(summary_text)\n    detail = parse_json(detail_text)\n    summary_totals = {}\n    detail_totals = {}\n\n    for item in get_items(summary, \"汇总表\"):\n        category = str(item.get(\"category\", \"\")).strip()\n        if not category:\n            raise ValueError(\"汇总表存在空货品类别\")\n        if category in summary_totals:\n            raise ValueError(\"汇总表存在重复类别：\" + category)\n        summary_totals[category] = to_amount(item.get(\"total_amount\"))\n\n    for item in get_items(detail, \"明细表\"):\n        category = str(item.get(\"category\", \"\")).strip()\n        if not category:\n            raise ValueError(\"明细表存在空货品类别\")\n        detail_totals[category] = detail_totals.get(category, Decimal(\"0\")) + to_amount(item.get(\"total_amount\"))\n\n    rows = []\n    for category in sorted(set(summary_totals) | set(detail_totals)):\n        summary_amount = summary_totals.get(category)\n        detail_amount = detail_totals.get(category)\n        if summary_amount is None:\n            matched = False\n            status = \"missing_in_summary\"\n            difference = None\n        elif detail_amount is None:\n            matched = False\n            status = \"missing_in_detail\"\n            difference = None\n        else:\n            difference_value = detail_amount - summary_amount\n            matched = difference_value == 0\n            status = \"match\" if matched else \"mismatch\"\n            difference = float(difference_value)\n        rows.append({\n            \"category\": category,\n            \"summary_total\": float(summary_amount) if summary_amount is not None else None,\n            \"detail_total\": float(detail_amount) if detail_amount is not None else None,\n            \"difference\": difference,\n            \"match\": matched,\n            \"status\": status\n        })\n\n    all_match = bool(rows) and all(row[\"match\"] for row in rows)\n    matched_count = sum(1 for row in rows if row[\"match\"])\n    comparison = {\n        \"all_match\": all_match,\n        \"status\": \"all_match\" if all_match else \"mismatch\",\n        \"category_count\": len(rows),\n        \"matched_count\": matched_count,\n        \"mismatched_count\": len(rows) - matched_count,\n        \"categories\": rows\n    }\n    return {\n        \"summary_data\": summary,\n        \"detail_data\": detail,\n        \"comparison_result\": comparison,\n        \"all_match\": all_match\n    }\n",
+            "variables": [
+              {
+                "variable": "summary_text",
+                "value_selector": [
+                  "parse_summary",
+                  "text"
+                ]
+              },
+              {
+                "variable": "detail_text",
+                "value_selector": [
+                  "parse_detail",
+                  "text"
+                ]
+              }
+            ],
+            "outputs": {
+              "summary_data": {
+                "type": "object",
+                "children": null
+              },
+              "detail_data": {
+                "type": "object",
+                "children": null
+              },
+              "comparison_result": {
+                "type": "object",
+                "children": null
+              },
+              "all_match": {
+                "type": "boolean",
+                "children": null
+              }
+            }
+          }
+        },
+        {
+          "id": "check_all_match",
+          "type": "custom",
+          "position": {
+            "x": 1080,
+            "y": 300
+          },
+          "positionAbsolute": {
+            "x": 1080,
+            "y": 300
+          },
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "width": 244,
+          "height": 120,
+          "data": {
+            "type": "if-else",
+            "title": "所有类别总价是否一致",
+            "desc": "全部一致与存在不一致分别输出。",
+            "selected": false,
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "id": "condition-all-match",
+                "variable_selector": [
+                  "compare_amounts",
+                  "all_match"
+                ],
+                "varType": "boolean",
+                "comparison_operator": "is",
+                "value": "true"
+              }
+            ]
+          }
+        },
+        {
+          "id": "end_all_match",
+          "type": "custom",
+          "position": {
+            "x": 1420,
+            "y": 100
+          },
+          "positionAbsolute": {
+            "x": 1420,
+            "y": 100
+          },
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "width": 244,
+          "height": 150,
+          "data": {
+            "type": "end",
+            "title": "全部一致并输出 JSON",
+            "desc": "本组比对完成；再次运行即可选择下一组图片。",
+            "selected": false,
+            "outputs": [
+              {
+                "variable": "summary_data",
+                "value_selector": [
+                  "compare_amounts",
+                  "summary_data"
+                ]
+              },
+              {
+                "variable": "detail_data",
+                "value_selector": [
+                  "compare_amounts",
+                  "detail_data"
+                ]
+              },
+              {
+                "variable": "comparison_result",
+                "value_selector": [
+                  "compare_amounts",
+                  "comparison_result"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "end_mismatch",
+          "type": "custom",
+          "position": {
+            "x": 1420,
+            "y": 500
+          },
+          "positionAbsolute": {
+            "x": 1420,
+            "y": 500
+          },
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "width": 244,
+          "height": 150,
+          "data": {
+            "type": "end",
+            "title": "存在不一致并结束",
+            "desc": "输出不一致类别及金额差异，结束本次流程。",
+            "selected": false,
+            "outputs": [
+              {
+                "variable": "summary_data",
+                "value_selector": [
+                  "compare_amounts",
+                  "summary_data"
+                ]
+              },
+              {
+                "variable": "detail_data",
+                "value_selector": [
+                  "compare_amounts",
+                  "detail_data"
+                ]
+              },
+              {
+                "variable": "comparison_result",
+                "value_selector": [
+                  "compare_amounts",
+                  "comparison_result"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "start-parse_summary",
+          "type": "custom",
+          "source": "start",
+          "target": "parse_summary",
+          "sourceHandle": "source",
+          "targetHandle": "target",
+          "zIndex": 0,
+          "data": {
+            "isInIteration": false,
+            "isInLoop": false,
+            "sourceType": "start",
+            "targetType": "llm"
+          }
+        },
+        {
+          "id": "start-parse_detail",
+          "type": "custom",
+          "source": "start",
+          "target": "parse_detail",
+          "sourceHandle": "source",
+          "targetHandle": "target",
+          "zIndex": 0,
+          "data": {
+            "isInIteration": false,
+            "isInLoop": false,
+            "sourceType": "start",
+            "targetType": "llm"
+          }
+        },
+        {
+          "id": "parse_summary-compare_amounts",
+          "type": "custom",
+          "source": "parse_summary",
+          "target": "compare_amounts",
+          "sourceHandle": "source",
+          "targetHandle": "target",
+          "zIndex": 0,
+          "data": {
+            "isInIteration": false,
+            "isInLoop": false,
+            "sourceType": "llm",
+            "targetType": "code"
+          }
+        },
+        {
+          "id": "parse_detail-compare_amounts",
+          "type": "custom",
+          "source": "parse_detail",
+          "target": "compare_amounts",
+          "sourceHandle": "source",
+          "targetHandle": "target",
+          "zIndex": 0,
+          "data": {
+            "isInIteration": false,
+            "isInLoop": false,
+            "sourceType": "llm",
+            "targetType": "code"
+          }
+        },
+        {
+          "id": "compare_amounts-check_all_match",
+          "type": "custom",
+          "source": "compare_amounts",
+          "target": "check_all_match",
+          "sourceHandle": "source",
+          "targetHandle": "target",
+          "zIndex": 0,
+          "data": {
+            "isInIteration": false,
+            "isInLoop": false,
+            "sourceType": "code",
+            "targetType": "if-else"
+          }
+        },
+        {
+          "id": "check_all_match-end_all_match",
+          "type": "custom",
+          "source": "check_all_match",
+          "target": "end_all_match",
+          "sourceHandle": "true",
+          "targetHandle": "target",
+          "zIndex": 0,
+          "data": {
+            "isInIteration": false,
+            "isInLoop": false,
+            "sourceType": "if-else",
+            "targetType": "end"
+          }
+        },
+        {
+          "id": "check_all_match-end_mismatch",
+          "type": "custom",
+          "source": "check_all_match",
+          "target": "end_mismatch",
+          "sourceHandle": "false",
+          "targetHandle": "target",
+          "zIndex": 0,
+          "data": {
+            "isInIteration": false,
+            "isInLoop": false,
+            "sourceType": "if-else",
+            "targetType": "end"
+          }
+        }
+      ],
+      "viewport": {
+        "x": 0,
+        "y": 0,
+        "zoom": 0.8
+      }
+    }
+  }
+}
