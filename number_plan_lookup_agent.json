@@ -1,0 +1,187 @@
+{
+  "agent": {
+    "id": "number_plan_lookup_agent",
+    "name": "号码套餐查询助手",
+    "version": "1.0.0",
+    "type": "workflow_agent",
+    "description": "用 auth 头拉取 http://134.38.9.3/002.aspx 的号码套餐 JSON，并读取 MySQL kaoshi.product 中的套餐改名记录；用户输入号码后返回套餐名（已改名则输出新套餐名），未收录输出「未查到该号码」，输入「退出」结束。",
+    "avatar": "📱",
+    "model": {
+      "llm": "doubao-pro-32k",
+      "temperature": 0.1,
+      "max_tokens": 1024
+    },
+    "instructions": "你是号码套餐查询助手。\n规则：\n1. 用户输入一个号码时，先在「远端号码套餐清单」中查找；查不到直接回复「未查到该号码」。\n2. 查到后取出该号码的套餐名；若该套餐在 product 表的改名记录中存在对应的新套餐名，则回复新套餐名，否则回复原套餐名。\n3. 用户输入「退出」时，回复「流程已结束。」并终止流程，不再等待输入。\n4. 其余任何输入都视为号码继续查询，回复后继续等待用户下一次输入。\n5. 只输出查询结果本身，不要解释内部实现。",
+    "opening_statement": "数据已加载完成，共 {{remote_count}} 个号码、{{rename_count}} 条套餐改名记录。请输入要查询的号码（输入「退出」结束）。",
+    "inputs": [
+      {
+        "name": "user_input",
+        "type": "string",
+        "label": "号码或「退出」",
+        "required": true,
+        "source": "user_chat_input",
+        "description": "循环等待用户输入，每次输入作为一个号码查询"
+      }
+    ],
+    "output_schema": {
+      "type": "object",
+      "required": ["type", "reply"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["found", "not_found", "exit", "empty"],
+          "description": "found 命中号码；not_found 未收录；exit 退出；empty 空输入"
+        },
+        "number": { "type": ["string", "null"] },
+        "old_plan": { "type": ["string", "null"], "description": "远端清单中的原套餐名" },
+        "new_plan": { "type": ["string", "null"], "description": "product 表中的新套餐名，无改名则为 null" },
+        "renamed": { "type": "boolean" },
+        "plan_name": { "type": ["string", "null"], "description": "最终输出的套餐名" },
+        "reply": { "type": "string", "description": "直接展示给用户的文本" }
+      }
+    },
+    "workflow": {
+      "entry": "http_fetch",
+      "init_once": ["http_fetch", "normalize_remote", "mysql_fetch", "build_rename"],
+      "loop": { "entry": "user_input", "max_rounds": 200, "on_exceed": "end" },
+      "nodes": [
+        {
+          "id": "http_fetch",
+          "type": "http_request",
+          "title": "01 拉取远端套餐清单",
+          "config": {
+            "method": "GET",
+            "url": "http://134.38.9.3/002.aspx",
+            "headers": { "auth": "10010" },
+            "timeout_ms": 20000,
+            "retry": { "times": 2, "interval_ms": 1000 },
+            "response_type": "json",
+            "run_mode": "once"
+          },
+          "outputs": ["response"]
+        },
+        {
+          "id": "normalize_remote",
+          "type": "code",
+          "title": "01 归一为 号码→套餐 映射",
+          "config": {
+            "language": "javascript",
+            "input": { "response": "{{http_fetch.response}}" },
+            "code": "const raw = $input.response;\nconst buckets = ['data','list','rows','result','items','records','body','payload'];\nlet arr = Array.isArray(raw) ? raw : null;\nif (!arr && raw && typeof raw === 'object') {\n  for (const k of buckets) { if (Array.isArray(raw[k])) { arr = raw[k]; break; } }\n  if (!arr) { const v = Object.values(raw).find(x => Array.isArray(x)); if (v) arr = v; }\n}\nif (!arr) arr = (raw && typeof raw === 'object') ? [raw] : [];\nconst numKeys = ['number','phone','mobile','msisdn','tel','account','phone_number','user_number','号码','手机号','电话号码'];\nconst planKeys = ['package','package_name','plan','plan_name','product_name','product','service_name','套餐','套餐名','套餐名称'];\nfunction pick(obj, keys) {\n  for (const k of Object.keys(obj)) {\n    if (keys.includes(k) || keys.includes(k.toLowerCase())) return obj[k];\n  }\n  return undefined;\n}\nconst map = {};\nfor (const it of arr) {\n  if (!it || typeof it !== 'object') continue;\n  let num = pick(it, numKeys);\n  if (num === undefined) num = Object.values(it).find(v => typeof v === 'string' && /^\\d{5,}$/.test(v.trim()));\n  let plan = pick(it, planKeys);\n  if (plan === undefined) {\n    const strs = Object.values(it).filter(v => typeof v === 'string' && v !== String(num));\n    plan = strs.length ? strs[strs.length - 1] : null;\n  }\n  if (num === undefined || num === null) continue;\n  map[String(num).trim()] = plan == null ? null : String(plan).trim();\n}\nreturn { count: Object.keys(map).length, map, sample_keys: (arr[0] && typeof arr[0] === 'object') ? Object.keys(arr[0]) : [] };"
+          },
+          "outputs": ["remote_map"]
+        },
+        {
+          "id": "mysql_fetch",
+          "type": "database",
+          "title": "02 读取套餐改名记录",
+          "config": {
+            "db_type": "mysql",
+            "host": "134.38.9.85",
+            "port": 3306,
+            "database": "kaoshi",
+            "username": "kaoshi",
+            "password": "kaoshi",
+            "sql": "SELECT product_name, new_product_name FROM product",
+            "run_mode": "once",
+            "timeout_ms": 20000
+          },
+          "outputs": ["rows"]
+        },
+        {
+          "id": "build_rename",
+          "type": "code",
+          "title": "02 归一为 老套餐→新套餐 映射",
+          "config": {
+            "language": "javascript",
+            "input": { "rows": "{{mysql_fetch.rows}}" },
+            "code": "const rows = $input.rows || [];\nconst map = {};\nfor (const r of rows) {\n  if (!r || typeof r !== 'object') continue;\n  const o = r.product_name ?? r.old_product_name ?? r.old_name;\n  const n = r.new_product_name ?? r.new_name;\n  if (o == null || String(o).trim() === '') continue;\n  map[String(o).trim()] = (n == null || String(n).trim() === '') ? null : String(n).trim();\n}\nreturn { count: Object.keys(map).length, map };"
+          },
+          "outputs": ["rename_map"]
+        },
+        {
+          "id": "user_input",
+          "type": "user_input",
+          "title": "03 等待用户输入号码",
+          "config": {
+            "variable": "user_input",
+            "placeholder": "请输入号码，或输入「退出」结束流程",
+            "required": true,
+            "allow_empty": false
+          },
+          "outputs": ["user_input"]
+        },
+        {
+          "id": "lookup",
+          "type": "code",
+          "title": "03 查询并解析套餐名",
+          "config": {
+            "language": "javascript",
+            "input": {
+              "user_input": "{{user_input.user_input}}",
+              "remote_map": "{{normalize_remote.remote_map.map}}",
+              "rename_map": "{{build_rename.rename_map.map}}"
+            },
+            "code": "const raw = String($input.user_input ?? '').trim();\nconst remote = $input.remote_map || {};\nconst rename = $input.rename_map || {};\nif (!raw) return { type: 'empty', reply: '请输入号码，或输入「退出」结束流程。' };\nif (raw === '退出') return { type: 'exit', reply: '流程已结束。' };\nif (!Object.prototype.hasOwnProperty.call(remote, raw)) {\n  return { type: 'not_found', number: raw, renamed: false, reply: '未查到该号码' };\n}\nconst oldPlan = remote[raw];\nconst hasRename = oldPlan != null && Object.prototype.hasOwnProperty.call(rename, oldPlan) && !!rename[oldPlan];\nconst newPlan = hasRename ? rename[oldPlan] : null;\nconst finalPlan = hasRename ? newPlan : oldPlan;\nreturn {\n  type: 'found',\n  number: raw,\n  old_plan: oldPlan,\n  new_plan: newPlan,\n  renamed: hasRename,\n  plan_name: finalPlan,\n  reply: (finalPlan == null || finalPlan === '') ? '未查到该号码的套餐信息' : finalPlan\n};"
+          },
+          "outputs": ["result"]
+        },
+        {
+          "id": "gate_exit",
+          "type": "condition",
+          "title": "04 是否退出",
+          "config": {
+            "expression": "{{lookup.result.type}} == 'exit'"
+          },
+          "branches": { "true": "end", "false": "answer" }
+        },
+        {
+          "id": "answer",
+          "type": "answer",
+          "title": "03 输出结果并继续等待",
+          "config": {
+            "text": "{{lookup.result.reply}}",
+            "then": "user_input"
+          }
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "title": "结束",
+          "config": {
+            "output": {
+              "last": "{{lookup.result}}",
+              "remote_count": "{{normalize_remote.remote_map.count}}",
+              "rename_count": "{{build_rename.rename_map.count}}"
+            }
+          }
+        }
+      ],
+      "edges": [
+        { "from": "http_fetch", "to": "normalize_remote" },
+        { "from": "normalize_remote", "to": "mysql_fetch" },
+        { "from": "mysql_fetch", "to": "build_rename" },
+        { "from": "build_rename", "to": "user_input" },
+        { "from": "user_input", "to": "lookup" },
+        { "from": "lookup", "to": "gate_exit" },
+        { "from": "gate_exit", "branch": "true", "to": "end", "label": "输入「退出」→ 结束" },
+        { "from": "gate_exit", "branch": "false", "to": "answer", "label": "继续查询" },
+        { "from": "answer", "to": "user_input", "label": "输出后继续等待输入" }
+      ]
+    },
+    "examples": [
+      {
+        "assume": {
+          "remote_map": { "13800000001": "畅享套餐A", "13800000002": "畅享套餐B" },
+          "rename_map": { "畅享套餐A": "畅享套餐A（2025版）" }
+        },
+        "cases": [
+          { "input": "13800000001", "output": { "type": "found", "number": "13800000001", "old_plan": "畅享套餐A", "new_plan": "畅享套餐A（2025版）", "renamed": true, "plan_name": "畅享套餐A（2025版）", "reply": "畅享套餐A（2025版）" } },
+          { "input": "13800000002", "output": { "type": "found", "number": "13800000002", "old_plan": "畅享套餐B", "new_plan": null, "renamed": false, "plan_name": "畅享套餐B", "reply": "畅享套餐B" } },
+          { "input": "13900000000", "output": { "type": "not_found", "number": "13900000000", "renamed": false, "reply": "未查到该号码" } },
+          { "input": "退出", "output": { "type": "exit", "reply": "流程已结束。" } }
+        ]
+      }
+    ]
+  }
+}
