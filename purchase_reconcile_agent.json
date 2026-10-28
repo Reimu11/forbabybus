@@ -1,0 +1,250 @@
+{
+  "agent": {
+    "id": "purchase_reconcile_agent",
+    "name": "采购汇总明细一致性校验助手",
+    "version": "1.0.0",
+    "type": "workflow_agent",
+    "description": "用户选择「采购金额汇总表」与「采购明细表」两张图片，自动识别表格内容并以 JSON 输出；按类别比对总价，全部一致则回到选图继续下一组，任一不一致则结束流程。",
+    "avatar": "📊",
+    "model": {
+      "llm": "doubao-pro-32k",
+      "vlm": "doubao-vision",
+      "temperature": 0.1,
+      "max_tokens": 2048
+    },
+    "instructions": "你是采购对账助手。用户每次提供两张图片：一张采购金额汇总表、一张采购明细表。\n工作步骤：\n1. 识别两张图片中的表格内容，严格输出 JSON，不得输出解释文字或 markdown 代码块。\n2. 对明细表按类别汇总金额，与汇总表中对应类别的总价逐一比对，容差 0.01 元。\n3. 若所有类别完全一致，提示用户可以继续选择下一组图片；若存在任一类别不一致，输出比对明细后结束流程，不再接收新的选图。\n4. 金额一律转数字，去掉千分位、货币符号与单位；无法辨认的单元格填 null，禁止编造数据。",
+    "opening_statement": "请从本地目录选择本次要核对的两张图片：采购金额汇总表.png 与 采购明细表.png。",
+    "suggested_questions": [
+      "开始核对这一组采购图片",
+      "上一组比对结果里哪些类别不一致？"
+    ],
+    "inputs": [
+      {
+        "name": "summary_image",
+        "type": "file",
+        "label": "采购金额汇总表",
+        "accept": ["png", "jpg", "jpeg"],
+        "required": true,
+        "source": "user_select_from_local",
+        "description": "从本地目录中选择，文件名通常为 采购金额汇总表.png"
+      },
+      {
+        "name": "detail_image",
+        "type": "file",
+        "label": "采购明细表",
+        "accept": ["png", "jpg", "jpeg"],
+        "required": true,
+        "source": "user_select_from_local",
+        "description": "从本地目录中选择，文件名通常为 采购明细表.png"
+      }
+    ],
+    "output_schema": {
+      "type": "object",
+      "required": ["round", "summary_table", "detail_table", "comparison", "action"],
+      "properties": {
+        "round": { "type": "integer", "description": "第几轮比对" },
+        "summary_table": {
+          "type": "object",
+          "required": ["source_file", "items"],
+          "properties": {
+            "source_file": { "type": "string" },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["category", "total_amount"],
+                "properties": {
+                  "category": { "type": "string" },
+                  "total_amount": { "type": ["number", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "detail_table": {
+          "type": "object",
+          "required": ["source_file", "rows"],
+          "properties": {
+            "source_file": { "type": "string" },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["category", "item", "qty", "unit_price", "amount"],
+                "properties": {
+                  "category": { "type": "string" },
+                  "item": { "type": "string" },
+                  "qty": { "type": ["number", "null"] },
+                  "unit_price": { "type": ["number", "null"] },
+                  "amount": { "type": ["number", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "comparison": {
+          "type": "object",
+          "required": ["all_match", "results"],
+          "properties": {
+            "all_match": { "type": "boolean" },
+            "tolerance": { "type": "number", "default": 0.01 },
+            "results": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["category", "summary_total", "detail_total", "diff", "match"],
+                "properties": {
+                  "category": { "type": "string" },
+                  "summary_total": { "type": ["number", "null"] },
+                  "detail_total": { "type": ["number", "null"] },
+                  "diff": { "type": ["number", "null"] },
+                  "match": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "action": {
+          "type": "string",
+          "enum": ["continue_select", "end"],
+          "description": "continue_select：回到第 1 步继续选图；end：流程结束"
+        }
+      }
+    },
+    "workflow": {
+      "entry": "start",
+      "loop": { "max_rounds": 10, "on_exceed": "end" },
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "title": "01 选择两张图片",
+          "config": {
+            "mode": "user_select_from_local",
+            "multi_select": true,
+            "max_files": 2,
+            "accept": ["png", "jpg", "jpeg"],
+            "hint": "请选择 采购金额汇总表.png 与 采购明细表.png"
+          },
+          "outputs": ["summary_image", "detail_image"]
+        },
+        {
+          "id": "parse_summary",
+          "type": "llm_vision",
+          "title": "02 解析汇总表",
+          "config": {
+            "model": "{{agent.model.vlm}}",
+            "image": "{{start.summary_image}}",
+            "temperature": 0,
+            "json_mode": true,
+            "prompt": "你是票据识别专家。请读取这张《采购金额汇总表》图片，逐行提取每个类别及其总价。\n要求：\n1) 只输出 JSON，不要任何解释、不要 markdown 代码块；\n2) 金额转数字，去掉千分位逗号、货币符号和单位，保留两位小数；\n3) 表头若为「类别/品名/货物类别」等近似说法，统一映射到 category；金额列映射到 total_amount；\n4) 输出结构固定为：{\"source_file\":\"采购金额汇总表.png\",\"items\":[{\"category\":\"\",\"total_amount\":0}]}；\n5) 看不清的单元格填 null，不要编造。"
+          },
+          "outputs": ["summary_table"]
+        },
+        {
+          "id": "parse_detail",
+          "type": "llm_vision",
+          "title": "02 解析明细表",
+          "config": {
+            "model": "{{agent.model.vlm}}",
+            "image": "{{start.detail_image}}",
+            "temperature": 0,
+            "json_mode": true,
+            "prompt": "你是票据识别专家。请读取这张《采购明细表》图片，逐行提取明细记录。\n要求：\n1) 只输出 JSON，不要任何解释、不要 markdown 代码块；\n2) 金额与数量转数字，去除千分位逗号、货币符号和单位；\n3) 字段映射：类别->category，货物名称->item，数量->qty，单价->unit_price，金额/小计->amount；\n4) 输出结构固定为：{\"source_file\":\"采购明细表.png\",\"rows\":[{\"category\":\"\",\"item\":\"\",\"qty\":0,\"unit_price\":0,\"amount\":0}]}；\n5) 若明细行缺金额但有数量与单价，用 qty*unit_price 计算；\n6) 看不清的单元格填 null，不要编造。"
+          },
+          "outputs": ["detail_table"]
+        },
+        {
+          "id": "aggregate",
+          "type": "code",
+          "title": "03 明细按类别汇总",
+          "config": {
+            "language": "javascript",
+            "input": { "rows": "{{parse_detail.detail_table.rows}}" },
+            "code": "const rows = $input.rows || [];\nconst map = {};\nfor (const r of rows) {\n  if (!r || !r.category) continue;\n  const amt = (r.amount != null) ? Number(r.amount) : (Number(r.qty)||0) * (Number(r.unit_price)||0);\n  map[r.category] = (map[r.category] || 0) + (Number(amt) || 0);\n}\nreturn Object.keys(map).map(k => ({ category: k, total: Math.round(map[k] * 100) / 100 }));"
+          },
+          "outputs": ["detail_totals"]
+        },
+        {
+          "id": "compare",
+          "type": "code",
+          "title": "03 类别总价比对",
+          "config": {
+            "language": "javascript",
+            "input": {
+              "summary_items": "{{parse_summary.summary_table.items}}",
+              "detail_totals": "{{aggregate.detail_totals}}",
+              "tolerance": 0.01
+            },
+            "code": "const s = $input.summary_items || [];\nconst d = $input.detail_totals || [];\nconst tol = Number($input.tolerance) || 0.01;\nconst dMap = {};\nd.forEach(x => { dMap[x.category] = x.total; });\nconst cats = Array.from(new Set([...s.map(x => x.category), ...d.map(x => x.category)]));\nconst results = cats.map(c => {\n  const sv = s.find(x => x.category === c);\n  const st = sv && sv.total_amount != null ? Number(sv.total_amount) : null;\n  const dt = dMap[c] !== undefined ? Number(dMap[c]) : null;\n  const diff = (st == null || dt == null) ? null : Math.round((st - dt) * 100) / 100;\n  return { category: c, summary_total: st, detail_total: dt, diff, match: diff !== null && Math.abs(diff) <= tol };\n});\nreturn { all_match: results.length > 0 && results.every(r => r.match), tolerance: tol, results };"
+          },
+          "outputs": ["comparison"]
+        },
+        {
+          "id": "gate",
+          "type": "condition",
+          "title": "04 是否全部一致",
+          "config": {
+            "expression": "{{compare.comparison.all_match}} == true"
+          },
+          "branches": { "true": "start", "false": "end" }
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "title": "结束",
+          "config": {
+            "output": {
+              "round": "{{runtime.round}}",
+              "summary_table": "{{parse_summary.summary_table}}",
+              "detail_table": "{{parse_detail.detail_table}}",
+              "comparison": "{{compare.comparison}}",
+              "action": "{{gate.branch == 'true' ? 'continue_select' : 'end'}}"
+            }
+          }
+        }
+      ],
+      "edges": [
+        { "from": "start", "to": "parse_summary" },
+        { "from": "parse_summary", "to": "parse_detail" },
+        { "from": "parse_detail", "to": "aggregate" },
+        { "from": "aggregate", "to": "compare" },
+        { "from": "compare", "to": "gate" },
+        { "from": "gate", "branch": "true", "to": "start", "label": "全部一致 → 回到选图" },
+        { "from": "gate", "branch": "false", "to": "end", "label": "存在不一致 → 结束" }
+      ]
+    },
+    "examples": [
+      {
+        "input": { "summary_image": "采购金额汇总表.png", "detail_image": "采购明细表.png" },
+        "output": {
+          "round": 1,
+          "summary_table": {
+            "source_file": "采购金额汇总表.png",
+            "items": [
+              { "category": "办公用品", "total_amount": 1280.0 },
+              { "category": "耗材", "total_amount": 456.5 }
+            ]
+          },
+          "detail_table": {
+            "source_file": "采购明细表.png",
+            "rows": [
+              { "category": "办公用品", "item": "A4纸", "qty": 10, "unit_price": 28.0, "amount": 280.0 },
+              { "category": "办公用品", "item": "订书机", "qty": 20, "unit_price": 50.0, "amount": 1000.0 },
+              { "category": "耗材", "item": "硒鼓", "qty": 1, "unit_price": 456.5, "amount": 456.5 }
+            ]
+          },
+          "comparison": {
+            "all_match": true,
+            "tolerance": 0.01,
+            "results": [
+              { "category": "办公用品", "summary_total": 1280.0, "detail_total": 1280.0, "diff": 0.0, "match": true },
+              { "category": "耗材", "summary_total": 456.5, "detail_total": 456.5, "diff": 0.0, "match": true }
+            ]
+          },
+          "action": "continue_select"
+        }
+      }
+    ]
+  }
+}
